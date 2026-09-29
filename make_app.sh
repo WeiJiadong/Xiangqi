@@ -23,6 +23,10 @@ cp "$ENGINE_DIR/pikafish"        "$APP/Contents/Resources/pikafish"
 cp "$ENGINE_DIR/pikafish.nnue"   "$APP/Contents/Resources/pikafish.nnue"
 chmod +x "$APP/Contents/Resources/pikafish"
 
+# App 图标
+echo ">> 拷贝图标"
+cp "Assets/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
+
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -34,6 +38,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleVersion</key>         <string>1.0</string>
     <key>CFBundleShortVersionString</key> <string>1.0</string>
     <key>CFBundleExecutable</key>      <string>Xiangqi</string>
+    <key>CFBundleIconFile</key>        <string>AppIcon</string>
     <key>CFBundlePackageType</key>     <string>APPL</string>
     <key>CFBundleInfoDictionaryVersion</key> <string>6.0</string>
     <key>LSMinimumSystemVersion</key>  <string>15.0</string>
