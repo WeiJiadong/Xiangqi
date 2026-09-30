@@ -38,10 +38,12 @@ struct ContentView: View {
                 Button("新对局") { showNewGame = true }
                     .keyboardShortcut("n")
                 Button("后退") { store.goBack() }
-                    .disabled(store.history.isEmpty || store.hintLoading || store.editMode)
+                    .disabled(store.history.isEmpty || store.hintLoading || store.editMode
+                              || store.anyAutoPlay)
                     .keyboardShortcut("z")
                 Button("前进") { store.goForward() }
-                    .disabled(store.redoStack.isEmpty || store.hintLoading || store.editMode)
+                    .disabled(store.redoStack.isEmpty || store.hintLoading || store.editMode
+                              || store.anyAutoPlay)
                     .keyboardShortcut("z", modifiers: [.command, .shift])
                 Button {
                     store.requestHint()
@@ -52,8 +54,23 @@ struct ContentView: View {
                         Text("支招")
                     }
                 }
-                .disabled(store.result != nil || store.hintLoading || store.editMode)
+                .disabled(store.result != nil || store.hintLoading || store.editMode
+                          || store.autoSides.contains(store.board.sideToMove))
                 .help("引擎算当前轮到方的最佳着法（限时 1.5 秒）")
+                Button {
+                    store.toggleAutoPlay(.red)
+                } label: {
+                    Text(store.autoPlayRed ? "停止帮红" : "帮红走棋")
+                }
+                .disabled(store.editMode || store.result != nil)
+                .help("引擎自动替红方走子，再点一次停止")
+                Button {
+                    store.toggleAutoPlay(.black)
+                } label: {
+                    Text(store.autoPlayBlack ? "停止帮黑" : "帮黑走棋")
+                }
+                .disabled(store.editMode || store.result != nil)
+                .help("引擎自动替黑方走子，再点一次停止")
                 Button("反转棋盘") { store.toggleBoardFlip() }
                     .help("翻转棋盘视角")
                 Button("编辑棋盘") { Task { await store.enterEditMode() } }
@@ -65,7 +82,8 @@ struct ContentView: View {
                 } label: {
                     Text(store.board.sideToMove == .red ? "走方：红" : "走方：黑")
                 }
-                .disabled(store.result != nil || store.hintLoading || store.editMode)
+                .disabled(store.result != nil || store.hintLoading || store.editMode
+                          || store.anyAutoPlay)
                 .help("手动指定当前行棋方（以当前局面为新起点，清空着法记录）")
                 Spacer()
             }

@@ -34,6 +34,12 @@ final class GameStore {
     private(set) var hintMove: Move?
     private(set) var hintText: String?
     private(set) var hintLoading = false
+    /// 自动走棋方集合：轮到集合内一方时引擎自动落子；空 = 全手动。
+    private(set) var autoSides: Set<XiangqiCore.Color> = []
+
+    var autoPlayRed: Bool { autoSides.contains(.red) }
+    var autoPlayBlack: Bool { autoSides.contains(.black) }
+    var anyAutoPlay: Bool { !autoSides.isEmpty }
     private(set) var editMode = false
     var editBrush: Piece = .redKing
     private(set) var editError: String?
@@ -57,7 +63,12 @@ final class GameStore {
             case .win(let winner, let by): return "\(winner == .red ? "红" : "黑")方胜（\(by)）"
             case .draw: return "和棋" }
         }
-        if hintLoading { return "支招计算中…" }
+        if hintLoading {
+            if autoSides.contains(board.sideToMove) {
+                return "\(board.sideToMove == .red ? "红" : "黑")方引擎思考中…"
+            }
+            return "支招计算中…"
+        }
         if Rules.inCheck(board, board.sideToMove) { return "\(board.sideToMove == .red ? "红" : "黑")方被将军" }
         return "轮到\(board.sideToMove == .red ? "红" : "黑")方"
     }
@@ -70,6 +81,7 @@ final class GameStore {
         engineTaskID = UUID()
         engineError = nil
         hintLoading = false
+        autoSides.removeAll()
         clearHint()
         // 旧会话随配置失效，重启时让 Threads/Hash 重新生效
         if session != nil {
@@ -86,7 +98,7 @@ final class GameStore {
 
     /// 手动指定当前行棋方：以当前局面为新起点（着法记录清零）。
     func setSideToMove(_ color: XiangqiCore.Color) {
-        guard result == nil, !hintLoading, !editMode else { return }
+        guard result == nil, !hintLoading, !editMode, autoSides.isEmpty else { return }
         board.sideToMove = color
         baseFen = Fen.serialize(board)
         history.removeAll()
@@ -100,6 +112,7 @@ final class GameStore {
         clearHint()
         refreshCheck()
         evaluateResult()
+        maybeAutoMove()   // 若切到了自动方，立即开算
     }
 
     // MARK: - 棋盘编辑
@@ -107,6 +120,7 @@ final class GameStore {
     /// 进入编辑模式：作废在飞支招、保留当前布局。
     func enterEditMode() async {
         guard !editMode else { return }
+        autoSides.removeAll()          // 编辑时停掉自动走棋
         engineTaskID = UUID()          // 使在飞支招结果失效
         await session?.interrupt()
         await hintTask?.value
@@ -168,10 +182,46 @@ final class GameStore {
         editError = nil
     }
 
+    /// 切换自动走棋：开启后轮到该方时引擎自动落子；再点一次关闭，恢复手动+支招。
+    func toggleAutoPlay(_ color: XiangqiCore.Color) {
+        if autoSides.contains(color) {
+            autoSides.remove(color)
+            engineTaskID = UUID()          // 作废在飞搜索
+            hintLoading = false
+            clearHint()
+            Task { await session?.interrupt() }   // 让引擎立即停算
+        } else {
+            autoSides.insert(color)
+            engineTaskID = UUID()          // 作废在飞支招
+            hintLoading = false
+            clearHint()
+            Task {
+                // 若有在飞搜索，先令其收尾再开新一轮，避免并发 go 撞车
+                await session?.interrupt()
+                await hintTask?.value
+                maybeAutoMove()
+            }
+        }
+    }
+
     /// 支招：给当前轮到方算最佳着法（限时 1.5 秒），棋盘高亮 + 文字提示。
-    /// 引擎只算不动手——仅显示建议，不落子。
+    /// 引擎只算不动手——仅显示建议，不落子。自动走棋方轮到时不受理。
     func requestHint() {
+        guard !autoSides.contains(board.sideToMove) else { return }
+        runEngineTurn()
+    }
+
+    /// 自动走棋方轮到时由各 hook 调用，启动引擎落子。
+    private func maybeAutoMove() {
+        guard autoSides.contains(board.sideToMove) else { return }
+        runEngineTurn()
+    }
+
+    /// 引擎算当前轮到方着法：自动模式落地走子，否则仅显示支招。
+    private func runEngineTurn() {
         guard result == nil, !hintLoading, !editMode else { return }
+        let mover = board.sideToMove
+        let auto = autoSides.contains(mover)
         engineTaskID = UUID()
         let id = engineTaskID
         hintLoading = true
@@ -189,10 +239,16 @@ final class GameStore {
                     self.engineError = "引擎返回非法着法：\(bm.uci)"
                     return
                 }
-                self.applyHint(bm)
+                if auto {
+                    self.play(bm)
+                } else {
+                    self.applyHint(bm)
+                }
             } catch {
                 guard id == self.engineTaskID else { return }
-                self.engineError = "支招失败：\(error.localizedDescription)"
+                self.engineError = auto ? "自动走棋失败：\(error.localizedDescription)"
+                                        : "支招失败：\(error.localizedDescription)"
+                if auto { self.autoSides.remove(mover) }   // 出错即停该方，避免卡死
             }
         }
     }
@@ -219,7 +275,7 @@ final class GameStore {
 
     /// 后退：回退最后一着，进入 redo 缓冲，可前进恢复。
     func goBack() {
-        guard !history.isEmpty, !hintLoading, !editMode else { return }
+        guard !history.isEmpty, !hintLoading, !editMode, autoSides.isEmpty else { return }
         redoStack.append(history.removeLast())
         replayFromStart()
         result = nil
@@ -229,7 +285,7 @@ final class GameStore {
 
     /// 前进：恢复最近一次后退掉的着法。
     func goForward() {
-        guard !redoStack.isEmpty, !hintLoading, !editMode else { return }
+        guard !redoStack.isEmpty, !hintLoading, !editMode, autoSides.isEmpty else { return }
         history.append(redoStack.removeLast())
         replayFromStart()
         result = nil
@@ -245,7 +301,7 @@ final class GameStore {
             editError = nil
             return
         }
-        if result != nil || hintLoading { return }
+        if result != nil || hintLoading || autoSides.contains(board.sideToMove) { return }
         clearHint()
         if let sel = selected {
             if selectedTargets.contains(square) {
@@ -321,6 +377,9 @@ final class GameStore {
         lastMove = move
         refreshCheck()
         evaluateResult()
+        // 异步触发：等当前引擎 Task 收尾（清 hintLoading）后再链到下一手，
+        // 同步调用会被 runEngineTurn 的 !hintLoading guard 拦掉
+        Task { self.maybeAutoMove() }
     }
 
     private func replayFromStart() {
