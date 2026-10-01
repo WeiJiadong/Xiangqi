@@ -35,8 +35,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleName</key>            <string>Xiangqi</string>
     <key>CFBundleDisplayName</key>     <string>象棋</string>
     <key>CFBundleIdentifier</key>      <string>local.xiangqi.Xiangqi</string>
-    <key>CFBundleVersion</key>         <string>1.0</string>
-    <key>CFBundleShortVersionString</key> <string>1.0</string>
+    <key>CFBundleVersion</key>         <string>1.1</string>
+    <key>CFBundleShortVersionString</key> <string>1.1</string>
     <key>CFBundleExecutable</key>      <string>Xiangqi</string>
     <key>CFBundleIconFile</key>        <string>AppIcon</string>
     <key>CFBundlePackageType</key>     <string>APPL</string>
