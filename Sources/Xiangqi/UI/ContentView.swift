@@ -56,7 +56,7 @@ struct ContentView: View {
                 }
                 .disabled(store.result != nil || store.hintLoading || store.editMode
                           || store.autoSides.contains(store.board.sideToMove))
-                .help("引擎算当前轮到方的最佳着法（限时 1.5 秒）")
+                .help("引擎算当前轮到方的最佳着法与备选（固定深度 18，评分可重现，5 种变化）")
                 Button {
                     store.toggleAutoPlay(.red)
                 } label: {
@@ -101,10 +101,13 @@ struct ContentView: View {
                     .foregroundColor(.red)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            if let hint = store.hintText {
-                Text("提示：\(hint)")
-                    .font(.callout.weight(.semibold))
-                    .foregroundColor(.green)
+            if !store.hintLines.isEmpty {
+                Divider()
+                HintPanelView(lines: store.hintLines,
+                              side: store.hintSide,
+                              board: store.board,
+                              selectedIndex: store.selectedHintLine,
+                              onSelect: { store.selectHintLine($0) })
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             if store.editMode {

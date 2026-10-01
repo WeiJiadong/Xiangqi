@@ -31,8 +31,12 @@ final class GameStore {
     private(set) var config = GameConfig.standard
     private(set) var engineError: String?
     private(set) var boardFlipped = false
-    private(set) var hintMove: Move?
-    private(set) var hintText: String?
+    /// 支招讲解：按 multipv 升序的多行评分着法；空 = 未支招。
+    private(set) var hintLines: [PvLine] = []
+    /// 支招时行棋方（评分视角转换用）。
+    private(set) var hintSide: XiangqiCore.Color = .red
+    /// 用户在讲解面板中点选的行索引；nil = 默认高亮首行（最佳着法）。
+    private(set) var selectedHintLine: Int?
     private(set) var hintLoading = false
     /// 自动走棋方集合：轮到集合内一方时引擎自动落子；空 = 全手动。
     private(set) var autoSides: Set<XiangqiCore.Color> = []
@@ -55,6 +59,9 @@ final class GameStore {
     private var engineTaskID = UUID()
     private var hintTask: Task<Void, Never>?
     private var editBackup: Board?
+
+    /// 兼容旧调用：当前最佳着法 = 首行首着。BoardView 的支招绿圈用此。
+    var hintMove: Move? { hintLines.first?.moves.first }
 
     var statusText: String {
         if editMode { return "棋盘编辑中：点击棋盘放置选中棋子" }
@@ -217,7 +224,7 @@ final class GameStore {
         runEngineTurn()
     }
 
-    /// 引擎算当前轮到方着法：自动模式落地走子，否则仅显示支招。
+    /// 引擎算当前轮到方着法：自动模式落地走子（MultiPV=1），手动支招返回 3 行讲解。
     private func runEngineTurn() {
         guard result == nil, !hintLoading, !editMode else { return }
         let mover = board.sideToMove
@@ -233,16 +240,18 @@ final class GameStore {
                     guard await self.ensureEngineSession() else { return }
                 }
                 guard let s = self.session else { return }
-                let bm = try await self.hintSearch(s: s, fen: fen, moves: moves)
-                guard id == self.engineTaskID else { return }
-                guard Rules.legalMoves(self.board).contains(bm) else {
-                    self.engineError = "引擎返回非法着法：\(bm.uci)"
-                    return
-                }
                 if auto {
+                    let bm = try await self.autoSearch(s: s, fen: fen, moves: moves)
+                    guard id == self.engineTaskID else { return }
+                    guard Rules.legalMoves(self.board).contains(bm) else {
+                        self.engineError = "引擎返回非法着法：\(bm.uci)"
+                        return
+                    }
                     self.play(bm)
                 } else {
-                    self.applyHint(bm)
+                    let lines = try await self.linesSearch(s: s, fen: fen, moves: moves)
+                    guard id == self.engineTaskID else { return }
+                    self.applyHint(lines)
                 }
             } catch {
                 guard id == self.engineTaskID else { return }
@@ -253,13 +262,29 @@ final class GameStore {
         }
     }
 
-    private func applyHint(_ mv: Move) {
-        hintMove = mv
-        hintText = ChineseNotation.notation(board, mv)
+    private func applyHint(_ lines: [PvLine]) {
+        let legal = Set(Rules.legalMoves(board))
+        let valid = lines.filter { line in
+            guard let head = line.moves.first else { return false }
+            return legal.contains(head)
+        }
+        if valid.isEmpty {
+            engineError = "支招失败：引擎未返回有效着法"
+            return
+        }
+        hintSide = board.sideToMove
+        hintLines = valid
+        selectedHintLine = nil
     }
 
-    /// 支招搜索：notStarted/disconnected 时透明重建会话并重试一次。
-    private func hintSearch(s: UCISession, fen: String, moves: [Move]) async throws -> Move {
+    /// 用户点选讲解列表某行：棋盘上高亮对应箭头。
+    func selectHintLine(_ index: Int) {
+        guard hintLines.indices.contains(index) else { return }
+        selectedHintLine = index
+    }
+
+    /// 自动走棋搜索：MultiPV=1，单 bestmove。notStarted/disconnected 时透明重建会话并重试一次。
+    private func autoSearch(s: UCISession, fen: String, moves: [Move]) async throws -> Move {
         do {
             return try await s.searchGame(fen: fen, moves: moves, tc: .movetime(1500))
         } catch EngineError.notStarted, EngineError.disconnected {
@@ -268,9 +293,20 @@ final class GameStore {
         }
     }
 
+    /// 支招讲解搜索：MultiPV=5（5 种变化）、固定深度 18（单线程+清 TT，评分可重现）。
+    /// 同样重试一次。
+    private func linesSearch(s: UCISession, fen: String, moves: [Move]) async throws -> [PvLine] {
+        do {
+            return try await s.searchLines(fen: fen, moves: moves, depth: 18, multiPV: 5)
+        } catch EngineError.notStarted, EngineError.disconnected {
+            guard await ensureEngineSession(), let s2 = session else { throw EngineError.notStarted }
+            return try await s2.searchLines(fen: fen, moves: moves, depth: 18, multiPV: 5)
+        }
+    }
+
     private func clearHint() {
-        hintMove = nil
-        hintText = nil
+        hintLines.removeAll()
+        selectedHintLine = nil
     }
 
     /// 后退：回退最后一着，进入 redo 缓冲，可前进恢复。

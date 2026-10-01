@@ -66,6 +66,75 @@ enum EngineIntegrationTests {
         }
     }
 
+    /// 复刻支招讲解路径：searchLines(depth 16, MultiPV=5) → 5 行评分着法按评分降序，
+    /// 且后续 searchGame 不受 Threads/MultiPV 残留影响。
+    static func searchLinesMultiPV() async -> [String?] {
+        guard available else { print("SKIP searchLinesMultiPV"); return [] }
+        let s = UCISession()
+        do {
+            try await s.start(enginePath: enginePath, options: [(name: "Threads", value: "1")])
+            let lines = try await s.searchLines(fen: Fen.startpos, moves: [], depth: 16, multiPV: 5)
+            let legal = Set(Rules.legalMoves(Fen.parse(Fen.startpos)!).map { $0.uci })
+            var checks: [String?] = [
+                expect(lines.count >= 4, "MultiPV=5 至少 4 行，实际 \(lines.count)"),
+                expect(lines.first?.score != nil, "首行应带评分"),
+            ]
+            for (i, line) in lines.enumerated() {
+                guard let head = line.moves.first else {
+                    checks.append("第 \(i) 行无 PV 着法")
+                    continue
+                }
+                checks.append(expect(legal.contains(head.uci), "第 \(i) 行首着 \(head.uci) 应 ∈ 合法着法集"))
+                checks.append(expect(line.score != nil, "第 \(i) 行应带评分"))
+            }
+            // 按评分降序断言（红方视角与行棋方视角的相对排序一致）
+            let ranks = lines.map { scoreRank($0.score) }
+            for i in 1..<ranks.count {
+                checks.append(expect(ranks[i] <= ranks[i - 1] + 1e-9,
+                                     "第 \(i-1) 行评分 \(ranks[i-1]) 应 ≥ 第 \(i) 行 \(ranks[i])"))
+            }
+            // Threads/MultiPV 复位验证：随后 searchGame 仍正常返回
+            let bm = try await s.searchGame(fen: Fen.startpos, moves: [], tc: .movetime(300))
+            checks.append(expect(legal.contains(bm.uci), "searchLines 后 searchGame 应仍合法"))
+            await s.shutdown()
+            return checks
+        } catch {
+            await s.shutdown()
+            return ["searchLines threw: \(error)"]
+        }
+    }
+
+    /// 确定性：同一局面两次 searchLines（单线程+清TT+固定深度）必须给出完全一致的多行结果。
+    /// 中间故意插入一次 searchGame 污染置换表，验证 ucinewgame 清表有效。
+    static func searchLinesDeterministic() async -> [String?] {
+        guard available else { print("SKIP searchLinesDeterministic"); return [] }
+        let s = UCISession()
+        do {
+            try await s.start(enginePath: enginePath, options: [(name: "Threads", value: "4")])
+            let l1 = try await s.searchLines(fen: Fen.startpos, moves: [], depth: 14, multiPV: 5)
+            let cannon = Move.parse("h2e2").map { [$0] } ?? []
+            _ = try await s.searchGame(fen: Fen.startpos, moves: cannon, tc: .movetime(200))
+            let l2 = try await s.searchLines(fen: Fen.startpos, moves: [], depth: 14, multiPV: 5)
+            await s.shutdown()
+            return [
+                expect(l1.count == l2.count, "两次行数应一致：\(l1.count) vs \(l2.count)"),
+                expect(l1 == l2, "同一局面两次 searchLines 应完全一致（单线程+清TT+固定深度）"),
+            ]
+        } catch {
+            await s.shutdown()
+            return ["threw: \(error)"]
+        }
+    }
+
+    /// 评分排序键：与 UCISession.scoreRank 同义（行棋方视角）。
+    private static func scoreRank(_ score: Score?) -> Double {
+        guard let score else { return -.infinity }
+        switch score {
+        case .cp(let v): return Double(v)
+        case .mate(let n): return n > 0 ? 100_000 - Double(n) : -100_000 - Double(n)
+        }
+    }
+
     static func randomGamesBestmoveLegal() async -> [String?] {
         guard available else { print("SKIP randomGamesBestmoveLegal"); return [] }
         let s = UCISession()
@@ -176,6 +245,8 @@ enum EngineIntegrationTests {
         ("EngineIntegrationTests.handshake", handshake),
         ("EngineIntegrationTests.startposBestmoveValid", startposBestmoveValid),
         ("EngineIntegrationTests.hintPathBestmoveLegal", hintPathBestmoveLegal),
+        ("EngineIntegrationTests.searchLinesMultiPV", searchLinesMultiPV),
+        ("EngineIntegrationTests.searchLinesDeterministic", searchLinesDeterministic),
         ("EngineIntegrationTests.randomGamesBestmoveLegal", randomGamesBestmoveLegal),
         ("EngineIntegrationTests.multiPVProducesLines", multiPVProducesLines),
         ("EngineIntegrationTests.infiniteThenStop", infiniteThenStop),

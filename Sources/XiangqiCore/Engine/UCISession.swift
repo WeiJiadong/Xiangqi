@@ -29,6 +29,8 @@ public actor UCISession {
     private var consumerTask: Task<Void, Never>?
     private var rawLog: [String] = []
     private let rawLogCap = 400
+    /// start() 时配置的 Threads 值；searchLines 结束后复位用。
+    private var initialThreads = 1
 
     public init() {}
 
@@ -82,6 +84,7 @@ public actor UCISession {
         if hasNNUE { send("setoption name EvalFile value \(nnue)") }
         for opt in options {
             send("setoption name \(opt.name) value \(opt.value)")
+            if opt.name == "Threads", let t = Int(opt.value) { initialThreads = t }
         }
         send("isready")
         try await awaitEvent(.readyok, timeout: 5.0)
@@ -105,6 +108,7 @@ public actor UCISession {
     public func searchGame(fen: String, moves: [Move], tc: TimeControl) async throws -> Move {
         try ensureReady()
         snapshot = AnalysisSnapshot()
+        send("setoption name MultiPV value 1")
         send(positionCmd(fen: fen, moves: moves))
         let timeout: TimeInterval
         switch tc {
@@ -118,6 +122,35 @@ public actor UCISession {
         try await awaitEvent(.bestmove, timeout: timeout)
         guard let bm = snapshot.bestMove else { throw EngineError.noMove }
         return bm
+    }
+
+    /// 多行搜索（支招讲解用，确定性）：单线程 + 清空置换表 + 固定深度，
+    /// 同一局面、同一引擎参数下每次必得同一评分序列（消除多线程调度与时间裁剪的随机性）。
+    /// 调用方须保证 idle；返回时把 Threads / MultiPV 复位为会话初始值，以免拖慢后续 searchGame。
+    public func searchLines(fen: String, moves: [Move], depth: Int, multiPV: Int) async throws -> [PvLine] {
+        try ensureReady()
+        snapshot = AnalysisSnapshot()
+        send("setoption name Threads value 1")
+        send("setoption name MultiPV value \(max(1, multiPV))")
+        send("ucinewgame")        // 清 TT：消除前次搜索残留对结果的影响
+        send("isready")
+        try await awaitEvent(.readyok, timeout: 10.0)
+        send(positionCmd(fen: fen, moves: moves))
+        send("go depth \(depth)")
+        try await awaitEvent(.bestmove, timeout: 120.0)
+        send("setoption name MultiPV value 1")
+        send("setoption name Threads value \(initialThreads)")  // 复位供 searchGame 复用
+        let lines = snapshot.lines.filter { !$0.moves.isEmpty }
+        return lines.sorted { Self.scoreRank($0.score) > Self.scoreRank($1.score) }
+    }
+
+    /// 评分排序键（行棋方视角）：己方杀步数越小越优且优于一切 cp；被杀局垫底，步数越大越优。
+    private static func scoreRank(_ score: Score?) -> Double {
+        guard let score else { return -.infinity }
+        switch score {
+        case .cp(let v): return Double(v)
+        case .mate(let n): return n > 0 ? 100_000 - Double(n) : -100_000 - Double(n)
+        }
     }
 
     // MARK: - 无限分析

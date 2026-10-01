@@ -24,11 +24,19 @@ struct BoardView: View {
                         .position(g.point(for: slot.square))
                         .transition(.opacity)
                 }
-                // 支招箭头：压在棋子上方，指示 起点→终点 方向
-                if store.hintMove != nil {
+                // 支招箭头：仅画前 3 名（绿/蓝/灰）+ 用户点选的第 4、5 行（橙色），其余只在列表里
+                if !store.hintLines.isEmpty {
                     Canvas { ctx, _ in
-                        if let hint = store.hintMove {
-                            drawHintArrow(&ctx, g: g, move: hint)
+                        let sel = store.selectedHintLine ?? 0
+                        for (idx, line) in store.hintLines.enumerated() {
+                            guard idx < 3 || idx == sel else { continue }
+                            guard let mv = line.moves.first else { continue }
+                            let emphasized = sel == idx
+                            let dim = store.selectedHintLine != nil && !emphasized
+                            drawHintArrow(&ctx, g: g, move: mv,
+                                          color: HintStyle.color(idx),
+                                          width: g.pieceDiameter * (emphasized ? 0.18 : 0.11),
+                                          alpha: dim ? 0.35 : 0.85)
                         }
                     }
                 }
@@ -64,12 +72,15 @@ struct BoardView: View {
             .stroke(SColor.accentColor.opacity(0.75),
                      style: StrokeStyle(lineWidth: 1.5, lineCap: .round, dash: [4, 3]))
         }
-        if let hint = store.hintMove {
+        if let lineIdx = store.selectedHintLine ?? (store.hintLines.isEmpty ? nil : 0),
+           store.hintLines.indices.contains(lineIdx),
+           let hint = store.hintLines[lineIdx].moves.first {
             let style = StrokeStyle(lineWidth: 2, dash: [5, 3])
+            let ringColor = HintStyle.color(lineIdx)
             markerRing(g.point(for: hint.from), diameter: g.pieceDiameter * 1.08,
-                       stroke: SColor.green, lineWidth: 2, style: style)
+                       stroke: ringColor, lineWidth: 2, style: style)
             markerRing(g.point(for: hint.to), diameter: g.pieceDiameter * 1.08,
-                       stroke: SColor.green, lineWidth: 2, style: style)
+                       stroke: ringColor, lineWidth: 2, style: style)
         }
         if let k = store.checkSquare {
             markerRing(g.point(for: k), diameter: g.pieceDiameter * 1.06, stroke: SColor.red, lineWidth: 2,
@@ -138,7 +149,8 @@ struct BoardView: View {
     }
 
     /// 支招箭头：粗杆圆帽 + 三角头，起终点稍收避开棋子圆心。
-    private func drawHintArrow(_ ctx: inout GraphicsContext, g: BoardGeometry, move: Move) {
+    private func drawHintArrow(_ ctx: inout GraphicsContext, g: BoardGeometry, move: Move,
+                               color: SColor, width: CGFloat, alpha: CGFloat) {
         let from = g.point(for: move.from)
         let to = g.point(for: move.to)
         let d = g.pieceDiameter
@@ -148,8 +160,6 @@ struct BoardView: View {
         let ux = dx / len, uy = dy / len
         let px = -uy, py = ux  // 垂直方向
 
-        let color = SColor.green
-        let alpha = 0.85
         let headLen = d * 0.44, headWidth = d * 0.46
         let start = CGPoint(x: from.x + ux * d * 0.2, y: from.y + uy * d * 0.2)
         let shaftEnd = CGPoint(x: to.x - ux * headLen * 0.75, y: to.y - uy * headLen * 0.75)
@@ -158,7 +168,7 @@ struct BoardView: View {
         shaft.move(to: start)
         shaft.addLine(to: shaftEnd)
         ctx.stroke(shaft, with: .color(color.opacity(alpha)),
-                   style: StrokeStyle(lineWidth: d * 0.16, lineCap: .round))
+                   style: StrokeStyle(lineWidth: width, lineCap: .round))
 
         let tip = to
         let base = CGPoint(x: to.x - ux * headLen, y: to.y - uy * headLen)
